@@ -377,3 +377,21 @@ export interface StepDefinition {
   type: MessageType
   content: string
 }
+
+// ─── Images ─────────────────────────────────────────────
+export interface UploadedImage {
+  id: string
+  key: string
+  url: string
+  mimeType: string
+  size: number
+}
+
+export interface UploadImageInput {
+  /** Base64-encoded image data (with or without data URI prefix) */
+  data: string
+  /** MIME type, e.g. "image/png". Defaults to "image/png" */
+  mimeType?: string
+  /** Optional original filename */
+  filename?: string
+}

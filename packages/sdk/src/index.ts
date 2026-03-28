@@ -12,6 +12,7 @@ export { TrackedLinksResource } from './resources/tracked-links.js'
 export { FormsResource } from './resources/forms.js'
 export { AdPlatformsResource } from './resources/ad-platforms.js'
 export { StaffResource } from './resources/staff.js'
+export { ImagesResource } from './resources/images.js'
 
 // All types
 export type {
@@ -59,6 +60,8 @@ export type {
   StaffProfile,
   CreateStaffInput,
   UpdateStaffInput,
+  UploadedImage,
+  UploadImageInput,
 } from './types.js'
 
 export type {
