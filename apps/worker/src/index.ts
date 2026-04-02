@@ -7,6 +7,7 @@ import { processScheduledBroadcasts } from './services/broadcast.js';
 import { processReminderDeliveries } from './services/reminder-delivery.js';
 import { checkAccountHealth } from './services/ban-monitor.js';
 import { refreshLineAccessTokens } from './services/token-refresh.js';
+import { processInsightFetch } from './services/insight-fetcher.js';
 import { authMiddleware } from './middleware/auth.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
 import { webhook } from './routes/webhook.js';
@@ -37,11 +38,15 @@ import { forms } from './routes/forms.js';
 import { adPlatforms } from './routes/ad-platforms.js';
 import { staff } from './routes/staff.js';
 import { images } from './routes/images.js';
+import { setup } from './routes/setup.js';
+import { autoReplies } from './routes/auto-replies.js';
+import { trafficPools } from './routes/traffic-pools.js';
 
 export type Env = {
   Bindings: {
     DB: D1Database;
     IMAGES: R2Bucket;
+    ASSETS: Fetcher;
     LINE_CHANNEL_SECRET: string;
     LINE_CHANNEL_ACCESS_TOKEN: string;
     API_KEY: string;
@@ -98,6 +103,9 @@ app.route('/', forms);
 app.route('/', adPlatforms);
 app.route('/', staff);
 app.route('/', images);
+app.route('/', setup);
+app.route('/', autoReplies);
+app.route('/', trafficPools);
 
 // Short link: /r/:ref → landing page with LINE open button
 app.get('/r/:ref', (c) => {
@@ -139,13 +147,14 @@ h1{font-size:28px;font-weight:800;margin-bottom:8px}
 // Convenience redirect for /book path
 app.get('/book', (c) => c.redirect('/?page=book'));
 
-// 404 fallback — JSON for API paths, plain for others (Workers Assets SPA fallback handles it)
-app.notFound((c) => {
+// 404 fallback — API paths return JSON 404, everything else serves from static assets (LIFF/admin)
+app.notFound(async (c) => {
   const path = new URL(c.req.url).pathname;
   if (path.startsWith('/api/') || path === '/webhook' || path === '/docs' || path === '/openapi.json') {
     return c.json({ success: false, error: 'Not found' }, 404);
   }
-  return c.notFound();
+  // Serve static assets (admin dashboard, LIFF pages)
+  return c.env.ASSETS.fetch(c.req.raw);
 });
 
 // Scheduled handler for cron triggers — runs for all active LINE accounts
@@ -168,6 +177,15 @@ async function scheduled(
     }
   }
 
+  // Build LineClient map for insight fetching (keyed by account id)
+  const lineClients = new Map<string, LineClient>();
+  for (const account of dbAccounts) {
+    if (account.is_active) {
+      lineClients.set(account.id, new LineClient(account.channel_access_token));
+    }
+  }
+  const defaultLineClient = new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN);
+
   // Run delivery for each account
   const jobs = [];
   for (const token of activeTokens) {
@@ -182,6 +200,13 @@ async function scheduled(
   jobs.push(refreshLineAccessTokens(env.DB));
 
   await Promise.allSettled(jobs);
+
+  // Fetch broadcast insights (runs daily, self-throttled)
+  try {
+    await processInsightFetch(env.DB, lineClients, defaultLineClient);
+  } catch (e) {
+    console.error('Insight fetch error:', e);
+  }
 }
 
 export default {

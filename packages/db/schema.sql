@@ -105,10 +105,34 @@ CREATE TABLE IF NOT EXISTS broadcasts (
   sent_at         TEXT,
   total_count     INTEGER NOT NULL DEFAULT 0,
   success_count   INTEGER NOT NULL DEFAULT 0,
+  line_request_id   TEXT,
+  aggregation_unit  TEXT,
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_broadcasts_status ON broadcasts (status);
+
+-- ============================================================
+-- Broadcast Insights
+-- ============================================================
+CREATE TABLE IF NOT EXISTS broadcast_insights (
+  id                  TEXT PRIMARY KEY,
+  broadcast_id        TEXT NOT NULL REFERENCES broadcasts(id) ON DELETE CASCADE,
+  delivered           INTEGER,
+  unique_impression   INTEGER,
+  unique_click        INTEGER,
+  unique_media_played INTEGER,
+  open_rate           REAL,
+  click_rate          REAL,
+  raw_response        TEXT,
+  status              TEXT NOT NULL CHECK (status IN ('pending', 'ready', 'failed')),
+  retry_count         INTEGER NOT NULL DEFAULT 0,
+  fetched_at          TEXT,
+  created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_broadcast_insights_broadcast_id ON broadcast_insights(broadcast_id);
+CREATE INDEX IF NOT EXISTS idx_broadcast_insights_status ON broadcast_insights(status);
 
 -- ============================================================
 -- Messages Log
@@ -137,6 +161,7 @@ CREATE TABLE IF NOT EXISTS auto_replies (
   match_type       TEXT NOT NULL CHECK (match_type IN ('exact', 'contains')) DEFAULT 'exact',
   response_type    TEXT NOT NULL DEFAULT 'text',
   response_content TEXT NOT NULL,
+  line_account_id  TEXT DEFAULT NULL,
   is_active        INTEGER NOT NULL DEFAULT 1,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );

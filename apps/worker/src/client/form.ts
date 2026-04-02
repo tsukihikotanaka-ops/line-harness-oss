@@ -21,6 +21,7 @@ declare const liff: {
 };
 
 const UUID_STORAGE_KEY = 'lh_uuid';
+const FORM_VERSION = '2.0.0'; // cache buster
 
 interface FormField {
   name: string;
@@ -29,6 +30,7 @@ interface FormField {
   required?: boolean;
   options?: string[];
   placeholder?: string;
+  columns?: number;
 }
 
 interface FormDef {
@@ -37,6 +39,10 @@ interface FormDef {
   description: string | null;
   fields: FormField[];
   isActive: boolean;
+  hideProfile?: boolean;
+  onSubmitWebhookUrl?: string | null;
+  onSubmitWebhookHeaders?: string | null;
+  onSubmitWebhookFailMessage?: string | null;
 }
 
 interface FormState {
@@ -116,7 +122,7 @@ function renderField(field: FormField): string {
             </label>`,
         )
         .join('');
-      inputHtml = `<div class="radio-group">${radios}</div>`;
+      inputHtml = `<div class="radio-group${field.columns === 2 ? ' two-col' : ''}">${radios}</div>`;
       break;
     }
 
@@ -130,7 +136,7 @@ function renderField(field: FormField): string {
             </label>`,
         )
         .join('');
-      inputHtml = `<div class="checkbox-group">${boxes}</div>`;
+      inputHtml = `<div class="checkbox-group${field.columns === 2 ? ' two-col' : ''}">${boxes}</div>`;
       break;
     }
 
@@ -184,6 +190,7 @@ function injectStyles(): void {
     .form-textarea { resize: vertical; min-height: 80px; }
     .form-select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23666' d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; }
     .radio-group, .checkbox-group { display: flex; flex-direction: column; gap: 10px; }
+    .radio-group.two-col, .checkbox-group.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .radio-label, .checkbox-label {
       display: flex; align-items: center; gap: 8px; font-size: 15px; color: #333;
       padding: 10px 12px; background: #fafafa; border-radius: 8px; border: 1.5px solid #e0e0e0;
@@ -193,8 +200,8 @@ function injectStyles(): void {
       border-color: #06C755; background: #e8faf0;
     }
     .radio-label input, .checkbox-label input { accent-color: #06C755; width: 18px; height: 18px; }
-    .radio-label input[type="radio"] { appearance: none; -webkit-appearance: none; width: 18px; height: 18px; border: 2px solid #ccc; border-radius: 4px; background: #fff; cursor: pointer; }
-    .radio-label input[type="radio"]:checked { background: #06C755; border-color: #06C755; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 16 16' fill='white' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M12.207 4.793a1 1 0 010 1.414l-5 5a1 1 0 01-1.414 0l-2-2a1 1 0 011.414-1.414L6.5 9.086l4.293-4.293a1 1 0 011.414 0z'/%3E%3C/svg%3E"); background-size: 14px; background-position: center; background-repeat: no-repeat; }
+    .radio-label input[type="radio"] { appearance: none; -webkit-appearance: none; width: 18px; height: 18px; border: 2px solid #ccc; border-radius: 50%; background: #fff; cursor: pointer; }
+    .radio-label input[type="radio"]:checked { background: #fff; border-color: #06C755; border-width: 5px; }
     .submit-btn {
       width: 100%; padding: 14px; border: none; border-radius: 8px;
       background: #06C755; color: #fff; font-size: 16px; font-weight: 700;
@@ -219,20 +226,20 @@ function render(): void {
 
   injectStyles();
   const app = getApp();
-  const profileHtml = profile?.pictureUrl
-    ? `<div class="form-profile">
+  const profileHtml = (formDef.hideProfile || !profile?.pictureUrl)
+    ? ''
+    : `<div class="form-profile">
         <img src="${profile.pictureUrl}" alt="" />
         <span>${escapeHtml(profile.displayName)} さん</span>
-      </div>`
-    : '';
+      </div>`;
 
   const fieldsHtml = formDef.fields.map(renderField).join('');
 
   app.innerHTML = `
     <div class="form-page">
       <div class="form-header">
-        <h1>${escapeHtml(formDef.name)}</h1>
-        ${formDef.description ? `<p class="form-description">${escapeHtml(formDef.description)}</p>` : ''}
+        <h1>${escapeHtml(formDef.name).replace(/\\n|\n/g, '<br>')}</h1>
+        ${formDef.description ? `<p class="form-description">${escapeHtml(formDef.description).replace(/\\n|\n/g, '<br>')}</p>` : ''}
         ${profileHtml}
       </div>
       <form id="liff-form" class="form-body" novalidate>
@@ -243,6 +250,29 @@ function render(): void {
   `;
 
   attachFormEvents();
+}
+
+function renderWebhookSuccess(message: string): void {
+  const app = getApp();
+  const lines = message.split('\n').map((l) => `<p>${escapeHtml(l)}</p>`).join('');
+  app.innerHTML = `
+    <div class="form-page">
+      <div class="success-card">
+        <div class="success-icon">🎉</div>
+        <h2>おめでとうございます！</h2>
+        <div class="success-message">${lines}</div>
+        <button class="close-btn" id="closeBtn">閉じる</button>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('closeBtn')?.addEventListener('click', () => {
+    if (liff.isInClient()) {
+      liff.closeWindow();
+    } else {
+      window.close();
+    }
+  });
 }
 
 function renderSuccess(): void {
@@ -384,6 +414,62 @@ async function submitForm(): Promise<void> {
   try {
     const data = collectFormData();
     console.log('Form data collected:', JSON.stringify(data));
+
+    // Webhook gate — call external API (e.g. X Harness verify) from browser
+    if (state.formDef.onSubmitWebhookUrl) {
+      let webhookUrl = state.formDef.onSubmitWebhookUrl;
+      for (const [key, value] of Object.entries(data)) {
+        webhookUrl = webhookUrl.replace(`{${key}}`, encodeURIComponent(String(value ?? '')));
+      }
+
+      const webhookHeaders: Record<string, string> = {};
+      if (state.formDef.onSubmitWebhookHeaders) {
+        try {
+          Object.assign(webhookHeaders, JSON.parse(state.formDef.onSubmitWebhookHeaders));
+        } catch { /* ignore */ }
+      }
+
+      const isGet = (state.formDef.onSubmitWebhookUrl || '').includes('{');
+      const webhookRes = await fetch(webhookUrl, {
+        method: isGet ? 'GET' : 'POST',
+        headers: { 'Content-Type': 'application/json', ...webhookHeaders },
+        ...(isGet ? {} : { body: JSON.stringify(data) }),
+      });
+      if (webhookRes.ok) {
+        const webhookData = await webhookRes.json() as Record<string, unknown>;
+        const eligible = webhookData.eligible ?? (webhookData.data as Record<string, unknown> | undefined)?.eligible ?? webhookData.success;
+        if (!eligible) {
+          throw new Error(state.formDef.onSubmitWebhookFailMessage || '条件を満たしていません');
+        }
+      } else {
+        throw new Error(state.formDef.onSubmitWebhookFailMessage || '確認に失敗しました');
+      }
+
+      // Webhook passed — submit data to server, then show success
+      const successMsg = state.formDef.onSubmitMessageContent || '条件をクリアしました！';
+      // Fall through to submit below, then show webhook success
+      const webhookBody: Record<string, unknown> = { data };
+      if (state.profile?.userId) webhookBody.lineUserId = state.profile.userId;
+
+      const webhookSubmitRes = await apiCall(`/api/forms/${state.formDef.id}/submit`, {
+        method: 'POST',
+        body: JSON.stringify(webhookBody),
+      });
+      if (!webhookSubmitRes.ok) {
+        const errText = await webhookSubmitRes.text().catch(() => '');
+        let errMsg = '送信に失敗しました';
+        try { const errData = JSON.parse(errText); errMsg = errData.error || errMsg; } catch { errMsg = errText || errMsg; }
+        throw new Error(`${webhookSubmitRes.status}: ${errMsg}`);
+      }
+      // Check server-side webhook recheck result
+      const submitResult = await webhookSubmitRes.clone().json().catch(() => null) as { data?: { webhookPassed?: boolean } } | null;
+      if (submitResult?.data?.webhookPassed === false) {
+        throw new Error(state.formDef.onSubmitWebhookFailMessage || '条件を満たしていません');
+      }
+      renderWebhookSuccess(successMsg);
+      return;
+    }
+
     const body: Record<string, unknown> = { data };
     if (state.profile?.userId) body.lineUserId = state.profile.userId;
     // Note: state.friendId is users.id (UUID), not friends.id — don't send as friendId
@@ -503,3 +589,4 @@ export async function initForm(formId: string | null): Promise<void> {
     renderFormError(err instanceof Error ? err.message : 'エラーが発生しました');
   }
 }
+

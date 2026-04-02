@@ -30,6 +30,18 @@ import type { Broadcast } from '@line-crm/shared'
 /** Broadcast type from API (now camelCase after worker serialization) */
 export type ApiBroadcast = Broadcast
 
+export type BroadcastInsight = {
+  broadcastId?: string
+  delivered: number | null
+  uniqueImpression: number | null
+  uniqueClick: number | null
+  uniqueMediaPlayed: number | null
+  openRate: number | null
+  clickRate: number | null
+  status?: string
+  fetchedAt?: string | null
+}
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL
 if (!API_URL) {
   throw new Error(
@@ -187,6 +199,10 @@ export const api = {
       fetchApi<ApiResponse<null>>(`/api/broadcasts/${id}`, { method: 'DELETE' }),
     send: (id: string) =>
       fetchApi<ApiResponse<ApiBroadcast>>(`/api/broadcasts/${id}/send`, { method: 'POST' }),
+    getInsight: (id: string) =>
+      fetchApi<ApiResponse<BroadcastInsight | null>>(`/api/broadcasts/${id}/insight`),
+    fetchInsight: (id: string) =>
+      fetchApi<ApiResponse<BroadcastInsight>>(`/api/broadcasts/${id}/fetch-insight`, { method: 'POST' }),
   },
 
   // ── Round 2 APIs ─────────────────────────────────────────────────────────

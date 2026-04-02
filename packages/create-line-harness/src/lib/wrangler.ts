@@ -10,15 +10,29 @@ export class WranglerError extends Error {
   }
 }
 
+let _accountId: string | undefined;
+
+/**
+ * Set the Cloudflare account ID to use for all wrangler commands.
+ * This is injected as CLOUDFLARE_ACCOUNT_ID env var.
+ */
+export function setAccountId(accountId: string): void {
+  _accountId = accountId;
+}
+
 export async function wrangler(
   args: string[],
   options?: { input?: string; cwd?: string },
 ): Promise<string> {
   try {
+    const env: Record<string, string> = { ...process.env, FORCE_COLOR: "0" } as Record<string, string>;
+    if (_accountId) {
+      env.CLOUDFLARE_ACCOUNT_ID = _accountId;
+    }
     const result = await execa("npx", ["wrangler", ...args], {
       cwd: options?.cwd,
       input: options?.input,
-      env: { ...process.env, FORCE_COLOR: "0" },
+      env,
     });
     return result.stdout;
   } catch (error: any) {

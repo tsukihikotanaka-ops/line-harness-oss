@@ -5,6 +5,8 @@ import {
   updateBroadcastStatus,
   getFriendsByTag,
   jstNow,
+  updateBroadcastLineRequestId,
+  createBroadcastInsight,
 } from '@line-crm/db';
 import type { Broadcast } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
@@ -44,7 +46,8 @@ export async function processBroadcastSend(
   try {
     if (broadcast.target_type === 'all') {
       // Use LINE broadcast API (sends to all followers)
-      await lineClient.broadcast([message]);
+      const { requestId } = await lineClient.broadcast([message]);
+      await updateBroadcastLineRequestId(db, broadcast.id, requestId, null);
       // We don't have exact count for broadcast API, set as 0 (unknown)
       totalCount = 0;
       successCount = 0;
@@ -60,6 +63,7 @@ export async function processBroadcastSend(
       // Send in batches with stealth delays to mimic human patterns
       const now = jstNow();
       const totalBatches = Math.ceil(followingFriends.length / MULTICAST_BATCH_SIZE);
+      const unit = `bcast_${broadcast.id.slice(0, 8)}`;
       for (let i = 0; i < followingFriends.length; i += MULTICAST_BATCH_SIZE) {
         const batchIndex = Math.floor(i / MULTICAST_BATCH_SIZE);
         const batch = followingFriends.slice(i, i + MULTICAST_BATCH_SIZE);
@@ -78,7 +82,7 @@ export async function processBroadcastSend(
         }
 
         try {
-          await lineClient.multicast(lineUserIds, [batchMessage]);
+          await lineClient.multicast(lineUserIds, [batchMessage], [unit]);
           successCount += batch.length;
 
           // Log only successfully sent messages
@@ -97,8 +101,10 @@ export async function processBroadcastSend(
           // Continue with next batch; failed batch is not logged
         }
       }
+      await updateBroadcastLineRequestId(db, broadcast.id, null, unit);
     }
 
+    await createBroadcastInsight(db, broadcast.id);
     await updateBroadcastStatus(db, broadcastId, 'sent', { totalCount, successCount });
   } catch (err) {
     // On failure, reset to draft so it can be retried

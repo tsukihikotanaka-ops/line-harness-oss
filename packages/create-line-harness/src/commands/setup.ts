@@ -11,9 +11,10 @@ import { deployAdmin } from "../steps/deploy-admin.js";
 import { setSecrets } from "../steps/secrets.js";
 import { generateMcpConfig } from "../steps/mcp-config.js";
 import { generateApiKey } from "../lib/crypto.js";
-import { wrangler } from "../lib/wrangler.js";
+import { wrangler, setAccountId } from "../lib/wrangler.js";
 
 interface SetupState {
+  projectName?: string;
   lineChannelId?: string;
   lineChannelAccessToken?: string;
   lineChannelSecret?: string;
@@ -22,6 +23,7 @@ interface SetupState {
   apiKey?: string;
   d1DatabaseId?: string;
   d1DatabaseName?: string;
+  r2BucketName?: string;
   workerName?: string;
   accountId?: string;
   botBasicId?: string;
@@ -84,8 +86,58 @@ export async function runSetup(repoDir: string): Promise<void> {
     saveState(repoDir, state);
     p.log.success(`Cloudflare アカウント: ${accountId}`);
   }
+  // Pin all wrangler commands to this account
+  setAccountId(state.accountId);
 
-  // Step 3: Get LINE credentials (skip if already saved)
+  // Step 1: Cloudflare R2 billing setup
+  if (!isDone(state, "r2billing")) {
+    p.log.step("═══ Step 1. Cloudflare 設定 ═══");
+    p.log.message(
+      [
+        "R2 Object Storage の有効化（10GB まで無料）",
+        "",
+        "https://www.cloudflare.com/ja-jp/ にアクセス",
+        "→ ログイン",
+        "→ サイドメニュー「Storage & Databases」",
+        "→ R2 Object Storage",
+        "→ Overview",
+        "→ クレジット＆個人情報を登録",
+        "",
+        "完了したら Enter を押してください",
+      ].join("\n"),
+    );
+    await p.text({
+      message: "R2 の有効化が完了したら Enter を押してください",
+      defaultValue: "done",
+    });
+    markDone(state, "r2billing");
+    saveState(repoDir, state);
+  }
+
+  // Get project name (used for Worker + D1 naming)
+  if (!state.projectName) {
+    const projectName = await p.text({
+      message: "プロジェクト名（Worker と D1 の名前に使われます）",
+      placeholder: "line-harness",
+      defaultValue: "line-harness",
+      validate(value) {
+        if (!value) return undefined; // use default
+        if (!/^[a-z0-9][a-z0-9-]*$/.test(value)) {
+          return "英小文字・数字・ハイフンのみ使用できます（例: my-line-bot）";
+        }
+      },
+    });
+    if (p.isCancel(projectName)) {
+      p.cancel("セットアップをキャンセルしました");
+      process.exit(0);
+    }
+    state.projectName = (projectName as string).trim() || "line-harness";
+    saveState(repoDir, state);
+  } else {
+    p.log.success(`プロジェクト名: ${state.projectName}`);
+  }
+
+  // Step 4: Get LINE credentials (skip if already saved)
   if (!isDone(state, "credentials")) {
     const credentials = await promptLineCredentials();
     state.lineChannelId = credentials.lineChannelId;
@@ -98,22 +150,23 @@ export async function runSetup(repoDir: string): Promise<void> {
     p.log.success("LINE チャネル情報: 入力済み（スキップ）");
   }
 
-  // Step 4: Ask for LIFF ID (skip if already saved)
+  // Step 5: Ask for LIFF ID (skip if already saved)
   if (!isDone(state, "liffId")) {
     p.log.message(
       [
-        "── LIFF アプリ（LINE Login チャネル内） ──",
+        "■ Step 3-2. LIFF ID 取得",
         "",
-        "LINE Login チャネルの設定:",
-        "  リンクされたボット: Messaging API のボットを選択",
-        "  Scope: openid, profile, chat_message.write を有効化",
-        "  友だち追加オプション: On (aggressive)",
-        "",
-        "LIFF アプリの作成:",
-        "  1. LINE Login チャネル → LIFF タブ → 追加",
-        "  2. サイズ: Full",
-        "  3. エンドポイント URL: https://example.com（後で変更します）",
-        "  4. 作成後に表示される LIFF ID をコピー",
+        "https://developers.line.biz/console/ にアクセス",
+        "→ Step 2 で設定したプロバイダーを選択",
+        "→ LINE ログインチャネル",
+        "→ 「LIFF」タブ",
+        "→ 追加",
+        "→ LIFF アプリ名: 任意記入",
+        "→ サイズ: Full",
+        "→ エンドポイント URL: https://example.com（後で変更します）",
+        "→ Scope: openid, profile, chat_message.write",
+        "→ 友だち追加オプション: On (Aggressive)",
+        "→ LIFF ID をコピー",
         "",
         "注意: LIFF アプリを「公開済み」にしてください（開発中だと動きません）",
       ].join("\n"),
@@ -139,15 +192,15 @@ export async function runSetup(repoDir: string): Promise<void> {
     p.log.success(`LIFF ID: 入力済み（${state.liffId}）`);
   }
 
-  // Step 5: Generate API key (skip if already generated)
+  // Step 6: Generate API key (skip if already generated)
   if (!state.apiKey) {
     state.apiKey = generateApiKey();
     saveState(repoDir, state);
   }
 
-  // Step 6: Create D1 database + run migrations
+  // Step 7: Create D1 database + run migrations
   if (!isDone(state, "database")) {
-    const { databaseId, databaseName } = await createDatabase(repoDir);
+    const { databaseId, databaseName } = await createDatabase(repoDir, state.projectName!);
     state.d1DatabaseId = databaseId;
     state.d1DatabaseName = databaseName;
     markDone(state, "database");
@@ -156,7 +209,29 @@ export async function runSetup(repoDir: string): Promise<void> {
     p.log.success(`D1 データベース: 作成済み（${state.d1DatabaseId}）`);
   }
 
-  // Step 7: Fetch bot basic ID (before worker deploy — LINE API doesn't need worker)
+  // Step 8: Create R2 bucket for image uploads
+  const r2BucketName = `${state.projectName}-images`;
+  if (!isDone(state, "r2")) {
+    const s = p.spinner();
+    s.start("R2 バケット作成中...");
+    try {
+      await wrangler(["r2", "bucket", "create", r2BucketName]);
+      s.stop("R2 バケット作成完了");
+    } catch (error: any) {
+      if (error?.stderr?.includes("already exists")) {
+        s.stop("R2 バケットは既に存在します");
+      } else {
+        s.stop("R2 バケット作成完了");
+      }
+    }
+    state.r2BucketName = r2BucketName;
+    markDone(state, "r2");
+    saveState(repoDir, state);
+  } else {
+    p.log.success(`R2 バケット: 作成済み（${state.r2BucketName}）`);
+  }
+
+  // Step 9: Fetch bot basic ID (before worker deploy — LINE API doesn't need worker)
   if (!state.botBasicId) {
     try {
       const botRes = await fetch("https://api.line.me/v2/bot/info", {
@@ -175,17 +250,17 @@ export async function runSetup(repoDir: string): Promise<void> {
     }
   }
 
-  // Step 8: Deploy Worker (includes LIFF build via @cloudflare/vite-plugin)
-  const workerName = "line-harness";
-  state.workerName = workerName;
+  // Step 10: Deploy Worker (includes LIFF build via @cloudflare/vite-plugin)
+  state.workerName = state.projectName!;
   if (!isDone(state, "worker")) {
     const { workerUrl } = await deployWorker({
       repoDir,
       d1DatabaseId: state.d1DatabaseId!,
       d1DatabaseName: state.d1DatabaseName!,
-      workerName,
+      workerName: state.workerName,
       accountId: state.accountId!,
       liffId: state.liffId!,
+      r2BucketName: state.r2BucketName!,
       botBasicId: state.botBasicId || "",
     });
     state.workerUrl = workerUrl;
@@ -195,10 +270,10 @@ export async function runSetup(repoDir: string): Promise<void> {
     p.log.success(`Worker: デプロイ済み（${state.workerUrl}）`);
   }
 
-  // Step 9: Set secrets
+  // Step 11: Set secrets
   if (!isDone(state, "secrets")) {
     await setSecrets({
-      workerName,
+      workerName: state.workerName,
       lineChannelAccessToken: state.lineChannelAccessToken!,
       lineChannelSecret: state.lineChannelSecret!,
       lineLoginChannelId: state.lineLoginChannelId!,
@@ -211,7 +286,7 @@ export async function runSetup(repoDir: string): Promise<void> {
     p.log.success("シークレット: 設定済み");
   }
 
-  // Step 10: Register LINE account in DB
+  // Step 12: Register LINE account in DB
   if (!isDone(state, "lineAccount")) {
     const s = p.spinner();
     s.start("LINE アカウント登録中...");
@@ -235,7 +310,7 @@ export async function runSetup(repoDir: string): Promise<void> {
           await wrangler([
             "d1",
             "execute",
-            "line-harness",
+            state.d1DatabaseName!,
             "--remote",
             "--command",
             `UPDATE line_accounts SET login_channel_id = '${state.lineLoginChannelId}' WHERE channel_id = '${state.lineChannelId}'`,
@@ -257,10 +332,10 @@ export async function runSetup(repoDir: string): Promise<void> {
     p.log.success("LINE アカウント: 登録済み");
   }
 
-  // Step 11: Deploy Admin UI
+  // Step 13: Deploy Admin UI
   // Use unique project names to avoid subdomain collision
   const suffix = state.apiKey!.slice(0, 8);
-  const adminProjectName = `lh-admin-${suffix}`;
+  const adminProjectName = `${state.projectName}-admin-${suffix}`;
   if (!isDone(state, "admin")) {
     const { adminUrl } = await deployAdmin({
       repoDir,
@@ -275,7 +350,7 @@ export async function runSetup(repoDir: string): Promise<void> {
     p.log.success(`Admin UI: デプロイ済み（${state.adminUrl}）`);
   }
 
-  // Step 12: Generate MCP config
+  // Step 14: Generate MCP config
   const addMcp = await p.confirm({
     message: "MCP 設定を .mcp.json に追加しますか？（Claude Code / Cursor 用）",
   });
@@ -283,24 +358,36 @@ export async function runSetup(repoDir: string): Promise<void> {
     generateMcpConfig({ workerUrl: state.workerUrl!, apiKey: state.apiKey! });
   }
 
-  // Step 13: Show completion screen
+  // Step 15: Show completion screen
   p.note(
     [
-      `${pc.bold("① Webhook URL を設定してください:")}`,
+      `${pc.bold("① LINE 応答設定を変更してください:")}`,
+      `   → LINE Official Account Manager → 設定 → 応答設定`,
+      `   チャット:             ${pc.red("オフ")}`,
+      `   あいさつメッセージ:   ${pc.red("オフ")}`,
+      `   Webhook:              ${pc.green("オン")}`,
+      `   応答メッセージ:       ${pc.red("オフ")}`,
+      "",
+      `${pc.bold("② Webhook URL を設定してください:")}`,
       `   ${pc.cyan(`${state.workerUrl}/webhook`)}`,
       `   → LINE Official Account Manager → 設定 → Messaging API`,
       `   → Webhook URL に貼り付け → 「Webhookの利用」を ${pc.bold("ON")} にする`,
       "",
-      `${pc.bold("② LIFF エンドポイント URL を更新してください:")}`,
+      `${pc.bold("③ LINE Login チャネルの設定:")}`,
+      `   → LINE Developers Console → LINE Login チャネル`,
+      `   a. 「リンクされたLINE公式アカウント」で公式アカウントを選択`,
+      `   b. 「友だち追加オプション」を ${pc.bold("On (aggressive)")} に設定`,
+      "",
+      `${pc.bold("④ LIFF エンドポイント URL を更新してください:")}`,
       `   ${pc.cyan(state.workerUrl!)}`,
       `   → LINE Developers Console → LINE Login チャネル → LIFF`,
       `   → エンドポイント URL をこの URL に変更`,
       "",
-      `${pc.bold("③ 友だち追加 URL（この URL を共有してください）:")}`,
+      `${pc.bold("⑤ 友だち追加 URL（この URL を共有してください）:")}`,
       `   ${pc.cyan(`${state.workerUrl}/auth/line?ref=setup`)}`,
       `   → QR で直追加ではなくこの URL 経由で追加してもらう`,
       "",
-      `${pc.bold("④ 管理画面:")}`,
+      `${pc.bold("⑥ 管理画面:")}`,
       `   ${pc.cyan(state.adminUrl!)}`,
       "",
       `${pc.bold("API Key:")}`,
@@ -308,6 +395,25 @@ export async function runSetup(repoDir: string): Promise<void> {
       `   → この値は再表示できません。安全な場所に保存してください`,
     ].join("\n"),
     "セットアップ完了！",
+  );
+
+  // Save config for future updates (separate from setup state)
+  const configPath = join(repoDir, ".line-harness-config.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify(
+      {
+        projectName: state.projectName,
+        workerName: state.workerName,
+        workerUrl: state.workerUrl,
+        adminUrl: state.adminUrl,
+        d1DatabaseName: state.d1DatabaseName,
+        d1DatabaseId: state.d1DatabaseId,
+        r2BucketName: state.r2BucketName,
+      },
+      null,
+      2,
+    ) + "\n",
   );
 
   // Clean up state file on success

@@ -24,6 +24,11 @@ function serializeForm(row: DbForm) {
     fields: JSON.parse(row.fields || '[]') as unknown[],
     onSubmitTagId: row.on_submit_tag_id,
     onSubmitScenarioId: row.on_submit_scenario_id,
+    onSubmitMessageType: row.on_submit_message_type,
+    onSubmitMessageContent: row.on_submit_message_content,
+    onSubmitWebhookUrl: row.on_submit_webhook_url,
+    onSubmitWebhookHeaders: row.on_submit_webhook_headers,
+    onSubmitWebhookFailMessage: row.on_submit_webhook_fail_message,
     saveToMetadata: Boolean(row.save_to_metadata),
     isActive: Boolean(row.is_active),
     submitCount: row.submit_count,
@@ -78,6 +83,11 @@ forms.post('/api/forms', async (c) => {
       fields?: unknown[];
       onSubmitTagId?: string | null;
       onSubmitScenarioId?: string | null;
+      onSubmitMessageType?: 'text' | 'flex' | null;
+      onSubmitMessageContent?: string | null;
+      onSubmitWebhookUrl?: string | null;
+      onSubmitWebhookHeaders?: string | null;
+      onSubmitWebhookFailMessage?: string | null;
       saveToMetadata?: boolean;
     }>();
 
@@ -91,6 +101,11 @@ forms.post('/api/forms', async (c) => {
       fields: JSON.stringify(body.fields ?? []),
       onSubmitTagId: body.onSubmitTagId ?? null,
       onSubmitScenarioId: body.onSubmitScenarioId ?? null,
+      onSubmitMessageType: body.onSubmitMessageType ?? null,
+      onSubmitMessageContent: body.onSubmitMessageContent ?? null,
+      onSubmitWebhookUrl: body.onSubmitWebhookUrl ?? null,
+      onSubmitWebhookHeaders: body.onSubmitWebhookHeaders ?? null,
+      onSubmitWebhookFailMessage: body.onSubmitWebhookFailMessage ?? null,
       saveToMetadata: body.saveToMetadata,
     });
 
@@ -111,6 +126,11 @@ forms.put('/api/forms/:id', async (c) => {
       fields?: unknown[];
       onSubmitTagId?: string | null;
       onSubmitScenarioId?: string | null;
+      onSubmitMessageType?: 'text' | 'flex' | null;
+      onSubmitMessageContent?: string | null;
+      onSubmitWebhookUrl?: string | null;
+      onSubmitWebhookHeaders?: string | null;
+      onSubmitWebhookFailMessage?: string | null;
       saveToMetadata?: boolean;
       isActive?: boolean;
     }>();
@@ -121,6 +141,11 @@ forms.put('/api/forms/:id', async (c) => {
       fields: body.fields !== undefined ? JSON.stringify(body.fields) : undefined,
       onSubmitTagId: body.onSubmitTagId,
       onSubmitScenarioId: body.onSubmitScenarioId,
+      onSubmitMessageType: body.onSubmitMessageType,
+      onSubmitMessageContent: body.onSubmitMessageContent,
+      onSubmitWebhookUrl: body.onSubmitWebhookUrl,
+      onSubmitWebhookHeaders: body.onSubmitWebhookHeaders,
+      onSubmitWebhookFailMessage: body.onSubmitWebhookFailMessage,
       saveToMetadata: body.saveToMetadata,
       isActive: body.isActive,
     });
@@ -217,6 +242,41 @@ forms.post('/api/forms/:id/submit', async (c) => {
       }
     }
 
+    // Webhook gate — server-side verification
+    // Note: CF Workers same-account fetch may 404 for self-referencing URLs.
+    // The webhook URL is also served in the form definition for the LIFF client to use.
+    if (form.on_submit_webhook_url) {
+      const webhookResult = await callFormWebhook(form, submissionData);
+      if (!webhookResult.passed) {
+        // Webhook rejected — send fail message and stop
+        if (form.on_submit_webhook_fail_message && friendId) {
+          const friend = await getFriendById(c.env.DB, friendId);
+          if (friend?.line_user_id) {
+            try {
+              const { LineClient } = await import('@line-crm/line-sdk');
+              let accessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
+              if ((friend as unknown as Record<string, unknown>).line_account_id) {
+                const { getLineAccountById } = await import('@line-crm/db');
+                const account = await getLineAccountById(c.env.DB, (friend as unknown as Record<string, unknown>).line_account_id as string);
+                if (account) accessToken = account.channel_access_token;
+              }
+              const lineClient = new LineClient(accessToken);
+              await lineClient.pushMessage(friend.line_user_id, [{ type: 'text', text: form.on_submit_webhook_fail_message }]);
+            } catch (e) {
+              console.error('Failed to send webhook fail message:', e);
+            }
+          }
+        }
+        // Still save the submission for records
+        const submission = await createFormSubmission(c.env.DB, {
+          formId,
+          friendId: friendId || null,
+          data: JSON.stringify({ ...submissionData, _webhookResult: webhookResult.data }),
+        });
+        return c.json({ success: true, data: { ...serializeSubmission(submission), webhookPassed: false, webhookData: webhookResult.data } }, 201);
+      }
+    }
+
     // Save submission (friendId null if not resolved — avoids FK constraint)
     const submission = await createFormSubmission(c.env.DB, {
       formId,
@@ -273,8 +333,19 @@ forms.post('/api/forms/:id/submit', async (c) => {
             if (account) accessToken = account.channel_access_token;
           }
           const lineClient = new LineClient(accessToken);
+          const { buildMessage, expandVariables } = await import('../services/step-delivery.js');
+          const apiOrigin = new URL(c.req.url).origin;
+          const { resolveMetadata } = await import('../services/step-delivery.js');
+          const resolvedMeta = await resolveMetadata(c.env.DB, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
+          const friendData = {
+            id: friend.id,
+            display_name: friend.display_name,
+            user_id: (friend as unknown as Record<string, string | null>).user_id,
+            ref_code: (friend as unknown as Record<string, string | null>).ref_code,
+            metadata: resolvedMeta,
+          };
 
-          // Build Flex card showing their answers
+          // Build diagnostic result Flex card showing their answers
           const entries = Object.entries(submissionData as Record<string, unknown>);
           const answerRows = entries.map(([key, value]) => {
             const field = form.fields ? (JSON.parse(form.fields) as Array<{ name: string; label: string }>).find((f: { name: string }) => f.name === key) : null;
@@ -289,13 +360,13 @@ forms.post('/api/forms/:id/submit', async (c) => {
             };
           });
 
-          const flex = {
+          const resultFlex = {
             type: 'bubble', size: 'giga',
             header: {
               type: 'box', layout: 'vertical',
               contents: [
                 { type: 'text', text: '診断結果', size: 'lg', weight: 'bold', color: '#1e293b' },
-                { type: 'text', text: `${friend.display_name || ''}さんのプロフィール`, size: 'xs', color: '#64748b', margin: 'sm' },
+                { type: 'text', text: `${friend.display_name || ''}さんの回答`, size: 'xs', color: '#64748b', margin: 'sm' },
               ],
               paddingAll: '20px', backgroundColor: '#f0fdf4',
             },
@@ -304,24 +375,21 @@ forms.post('/api/forms/:id/submit', async (c) => {
               contents: [
                 ...answerRows,
                 { type: 'separator', margin: 'lg' },
-                ...(form.save_to_metadata ? [{ type: 'box', layout: 'vertical', margin: 'lg', backgroundColor: '#eff6ff', cornerRadius: 'md', paddingAll: '12px',
-                  contents: [
-                    { type: 'text', text: 'メタデータに自動保存済み。今後の配信があなたに最適化されます。', size: 'xxs', color: '#2563EB', wrap: true },
-                  ],
-                }] : []),
+                { type: 'text', text: '他社サービスでは、フォームの回答内容に合わせたリアルタイム返信はできません。LINE Harnessだからこそ可能な体験です。', size: 'xs', color: '#06C755', weight: 'bold', wrap: true, margin: 'lg' },
               ],
               paddingAll: '20px',
             },
-            footer: {
-              type: 'box', layout: 'vertical', paddingAll: '16px',
-              contents: [
-                { type: 'button', action: { type: 'message', label: 'アカウント連携を見る', text: 'アカウント連携を見る' }, style: 'primary', color: '#14b8a6' },
-              ],
-            },
           };
 
-          const { buildMessage } = await import('../services/step-delivery.js');
-          await lineClient.pushMessage(friend.line_user_id, [buildMessage('flex', JSON.stringify(flex))]);
+          const messages = [buildMessage('flex', JSON.stringify(resultFlex))];
+
+          // If form has a custom on_submit_message, send it AFTER the diagnostic result
+          if (form.on_submit_message_type && form.on_submit_message_content) {
+            const expanded = expandVariables(form.on_submit_message_content, friendData, apiOrigin);
+            messages.push(buildMessage(form.on_submit_message_type, expanded));
+          }
+
+          await lineClient.pushMessage(friend.line_user_id, messages);
         })(),
       );
 
@@ -339,5 +407,50 @@ forms.post('/api/forms/:id/submit', async (c) => {
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
+
+async function callFormWebhook(
+  form: DbForm,
+  submissionData: Record<string, unknown>,
+): Promise<{ passed: boolean; data: unknown }> {
+  if (!form.on_submit_webhook_url) return { passed: true, data: null };
+
+  try {
+    // Replace {field_name} placeholders in URL with submitted values
+    let url = form.on_submit_webhook_url;
+    for (const [key, value] of Object.entries(submissionData)) {
+      url = url.replace(`{${key}}`, encodeURIComponent(String(value ?? '')));
+    }
+
+    // Parse headers
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (form.on_submit_webhook_headers) {
+      try {
+        const parsed = JSON.parse(form.on_submit_webhook_headers) as Record<string, string>;
+        Object.assign(headers, parsed);
+      } catch { /* ignore invalid headers */ }
+    }
+
+    // Determine method: GET if URL has {placeholders} replaced, POST otherwise
+    const isGet = form.on_submit_webhook_url.includes('{');
+    const res = await fetch(url, {
+      method: isGet ? 'GET' : 'POST',
+      headers,
+      ...(isGet ? {} : { body: JSON.stringify(submissionData) }),
+    });
+
+    if (!res.ok) {
+      return { passed: false, data: { error: `HTTP ${res.status}` } };
+    }
+
+    const data = await res.json() as Record<string, unknown>;
+
+    // Check for eligibility — support both { eligible: bool } and { success: bool, data: { eligible: bool } }
+    const eligible = data.eligible ?? (data.data as Record<string, unknown> | undefined)?.eligible ?? data.success;
+    return { passed: Boolean(eligible), data };
+  } catch (err) {
+    console.error('Form webhook error:', err);
+    return { passed: false, data: { error: String(err) } };
+  }
+}
 
 export { forms };

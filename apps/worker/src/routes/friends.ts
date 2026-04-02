@@ -352,8 +352,9 @@ friends.post('/api/friends/:id/messages', async (c) => {
 
     return c.json({ success: true, data: { messageId: logId } });
   } catch (err) {
-    console.error('POST /api/friends/:id/messages error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error('POST /api/friends/:id/messages error:', errMsg);
+    return c.json({ success: false, error: errMsg }, 500);
   }
 });
 

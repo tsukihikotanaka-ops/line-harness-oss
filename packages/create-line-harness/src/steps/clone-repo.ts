@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execa } from "execa";
 
-const REPO_URL = "https://github.com/Shudesu/line-harness.git";
+const REPO_URL = "https://github.com/Shudesu/line-harness-oss.git";
 
 /**
  * Clone the LINE Harness repo and install dependencies.

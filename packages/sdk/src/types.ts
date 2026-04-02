@@ -156,7 +156,28 @@ export interface Broadcast {
   sentAt: string | null
   totalCount: number
   successCount: number
+  lineRequestId?: string | null
+  aggregationUnit?: string | null
   createdAt: string
+}
+
+export interface BroadcastInsight {
+  id: string
+  broadcastId: string
+  delivered: number | null
+  uniqueImpression: number | null
+  uniqueClick: number | null
+  uniqueMediaPlayed: number | null
+  openRate: number | null
+  clickRate: number | null
+  status: 'pending' | 'ready' | 'failed'
+  retryCount: number
+  fetchedAt: string | null
+  createdAt: string
+}
+
+export interface BroadcastWithInsight extends Broadcast {
+  insight?: BroadcastInsight | null
 }
 
 export interface CreateBroadcastInput {
@@ -275,6 +296,8 @@ export interface Form {
   fields: FormField[]
   onSubmitTagId: string | null
   onSubmitScenarioId: string | null
+  onSubmitMessageType: 'text' | 'flex' | null
+  onSubmitMessageContent: string | null
   saveToMetadata: boolean
   isActive: boolean
   submitCount: number
@@ -288,6 +311,8 @@ export interface CreateFormInput {
   fields: FormField[]
   onSubmitTagId?: string | null
   onSubmitScenarioId?: string | null
+  onSubmitMessageType?: 'text' | 'flex' | null
+  onSubmitMessageContent?: string | null
   saveToMetadata?: boolean
 }
 
@@ -297,6 +322,8 @@ export interface UpdateFormInput {
   fields?: FormField[]
   onSubmitTagId?: string | null
   onSubmitScenarioId?: string | null
+  onSubmitMessageType?: 'text' | 'flex' | null
+  onSubmitMessageContent?: string | null
   saveToMetadata?: boolean
   isActive?: boolean
 }
@@ -307,6 +334,35 @@ export interface FormSubmission {
   friendId: string | null
   data: Record<string, unknown>
   createdAt: string
+}
+
+// ─── Auto-Replies ──────────────────────────────────────
+export interface AutoReply {
+  id: string
+  keyword: string
+  matchType: 'exact' | 'contains'
+  responseType: string
+  responseContent: string
+  lineAccountId: string | null
+  isActive: boolean
+  createdAt: string
+}
+
+export interface CreateAutoReplyInput {
+  keyword: string
+  matchType?: 'exact' | 'contains'
+  responseType?: string
+  responseContent: string
+  lineAccountId?: string | null
+}
+
+export interface UpdateAutoReplyInput {
+  keyword?: string
+  matchType?: 'exact' | 'contains'
+  responseType?: string
+  responseContent?: string
+  lineAccountId?: string | null
+  isActive?: boolean
 }
 
 // ─── Calendar ───────────────────────────────────────────

@@ -131,7 +131,9 @@ async function handleEvent(
             const firstStep = steps[0];
             if (firstStep && firstStep.delay_minutes === 0 && friendScenario.status === 'active') {
               try {
-                const expandedContent = expandVariables(firstStep.message_content, friend as { id: string; display_name: string | null; user_id: string | null });
+                const { resolveMetadata } = await import('../services/step-delivery.js');
+                const resolvedMeta = await resolveMetadata(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
+                const expandedContent = expandVariables(firstStep.message_content, { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1]);
                 const message = buildMessage(firstStep.message_type, expandedContent);
                 await lineClient.replyMessage(event.replyToken, [message]);
                 console.log(`Immediate delivery: sent step ${firstStep.id} to ${userId}`);
@@ -183,6 +185,52 @@ async function handleEvent(
     if (!userId) return;
 
     await updateFriendFollowStatus(db, userId, false);
+    return;
+  }
+
+  // Postback events — triggered by Flex buttons with action.type: "postback"
+  // Uses the same auto_replies matching but without displaying text in chat
+  if (event.type === 'postback') {
+    const userId = event.source.type === 'user' ? event.source.userId : undefined;
+    if (!userId) return;
+
+    const friend = await getFriendByLineUserId(db, userId);
+    if (!friend) return;
+
+    const postbackData = (event as unknown as { postback: { data: string } }).postback.data;
+
+    // Match postback data against auto_replies (exact match on keyword)
+    const autoReplyQuery = lineAccountId
+      ? `SELECT * FROM auto_replies WHERE is_active = 1 AND (line_account_id IS NULL OR line_account_id = ?) ORDER BY created_at ASC`
+      : `SELECT * FROM auto_replies WHERE is_active = 1 AND line_account_id IS NULL ORDER BY created_at ASC`;
+    const autoReplyStmt = db.prepare(autoReplyQuery);
+    const autoReplies = await (lineAccountId ? autoReplyStmt.bind(lineAccountId) : autoReplyStmt)
+      .all<{
+        id: string;
+        keyword: string;
+        match_type: 'exact' | 'contains';
+        response_type: string;
+        response_content: string;
+      }>();
+
+    for (const rule of autoReplies.results) {
+      const isMatch = rule.match_type === 'exact'
+        ? postbackData === rule.keyword
+        : postbackData.includes(rule.keyword);
+
+      if (isMatch) {
+        try {
+          const { resolveMetadata } = await import('../services/step-delivery.js');
+          const resolvedMeta = await resolveMetadata(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
+          const expandedContent = expandVariables(rule.response_content, { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1], workerUrl);
+          const replyMsg = buildMessage(rule.response_type, expandedContent);
+          await lineClient.replyMessage(event.replyToken, [replyMsg]);
+        } catch (err) {
+          console.error('Failed to send postback reply', err);
+        }
+        break;
+      }
+    }
     return;
   }
 
@@ -334,7 +382,9 @@ async function handleEvent(
       if (isMatch) {
         try {
           // Expand template variables ({{name}}, {{uid}}, {{auth_url:CHANNEL_ID}})
-          const expandedContent = expandVariables(rule.response_content, friend as { id: string; display_name: string | null; user_id: string | null }, workerUrl);
+          const { resolveMetadata: resolveMeta2 } = await import('../services/step-delivery.js');
+          const resolvedMeta2 = await resolveMeta2(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
+          const expandedContent = expandVariables(rule.response_content, { ...friend, metadata: resolvedMeta2 } as Parameters<typeof expandVariables>[1], workerUrl);
           const replyMsg = buildMessage(rule.response_type, expandedContent);
           await lineClient.replyMessage(event.replyToken, [replyMsg]);
           replyTokenConsumed = true;

@@ -29,23 +29,19 @@ declare const liff: {
   closeWindow(): void;
 };
 
-// Resolve LIFF ID: check query param first, then fallback to env var
+// Resolve LIFF ID: ?liffId= param (from endpoint URL) > env var (fallback to ①)
 function detectLiffId(): string {
-  const params = new URLSearchParams(window.location.search);
-  const fromParam = params.get('liffId');
+  const fromParam = new URLSearchParams(window.location.search).get('liffId');
   if (fromParam) return fromParam;
   return import.meta.env?.VITE_LIFF_ID || '';
 }
 const LIFF_ID = detectLiffId();
-if (!LIFF_ID && !new URLSearchParams(window.location.search).get('liffId')) {
-  throw new Error(
-    'VITE_LIFF_ID is not set and no liffId query param provided. ' +
-    'Set VITE_LIFF_ID in .env (local) or GitHub Secrets (CI).'
-  )
+if (!LIFF_ID) {
+  throw new Error('LIFF ID not found. Set ?liffId= in LIFF endpoint URL or VITE_LIFF_ID env.');
 }
 const UUID_STORAGE_KEY = 'lh_uuid';
-// LINE公式アカウントの友だち追加URL（LINE Developers Console → Messaging API → Bot basic ID）
-const BOT_BASIC_ID = import.meta.env?.VITE_BOT_BASIC_ID || '';
+// Bot basic ID — resolved dynamically from API after liff.init()
+let BOT_BASIC_ID = '';
 
 function apiCall(path: string, options?: RequestInit): Promise<Response> {
   return fetch(path, {
@@ -242,8 +238,23 @@ async function linkAndAddFlow() {
       // Not a friend yet → show friend-add button
       showFriendAdd(profile);
     } else {
-      // Already a friend → all done
-      showCompletion(profile, !!existingUuid);
+      // Already a friend — check for form param
+      const formParam = new URLSearchParams(window.location.search).get('form');
+      if (formParam) {
+        // Send form link via push message, then show completion
+        try {
+          await apiCall('/api/liff/send-form-link', {
+            method: 'POST',
+            body: JSON.stringify({
+              lineUserId: profile.userId,
+              formId: formParam,
+            }),
+          });
+        } catch { /* best-effort */ }
+        showCompletion(profile, !!existingUuid);
+      } else {
+        showCompletion(profile, !!existingUuid);
+      }
     }
 
   } catch (err) {
@@ -266,6 +277,17 @@ async function main() {
       return;
     }
 
+    // Resolve bot basic ID from API (multi-account support)
+    try {
+      const configRes = await fetch(`/api/liff/config?liffId=${encodeURIComponent(LIFF_ID)}`);
+      const configJson = await configRes.json() as { success: boolean; data?: { botBasicId?: string } };
+      if (configJson.success && configJson.data?.botBasicId) {
+        BOT_BASIC_ID = configJson.data.botBasicId;
+      }
+    } catch {
+      // fallback: BOT_BASIC_ID remains empty, friend-add URL won't auto-redirect
+    }
+
     const page = getPage();
     if (page === 'book') {
       await initBooking();
@@ -273,6 +295,22 @@ async function main() {
       const params = new URLSearchParams(window.location.search);
       const formId = params.get('id');
       await initForm(formId);
+    } else if (!page) {
+      // Check for ?form=xxx shorthand (from /auth/line?form=xxx flow)
+      const params = new URLSearchParams(window.location.search);
+      const formParam = params.get('form');
+      if (formParam) {
+        // Ensure user is a friend before showing form
+        const { friendFlag } = await liff.getFriendship();
+        if (!friendFlag) {
+          const profile = await liff.getProfile();
+          showFriendAdd(profile);
+          return;
+        }
+        await initForm(formParam);
+      } else {
+        await linkAndAddFlow();
+      }
     } else {
       await linkAndAddFlow();
     }

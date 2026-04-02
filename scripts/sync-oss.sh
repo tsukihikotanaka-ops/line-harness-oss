@@ -39,7 +39,7 @@ find . -type f \( -name "*.ts" -o -name "*.tsx" -o -name "*.md" -o -name "*.toml
   -not -path "*/node_modules/*" -not -path "*/.git/*" \
   -exec sed -i '' \
     -e 's|YOUR_D1_DATABASE_ID|YOUR_D1_DATABASE_ID|g' \
-    -e 's|YOUR_D1_DATABASE_ID"]*"|YOUR_D1_DATABASE_ID"|g' \
+    -e 's|b2712617[^"]*"|YOUR_D1_DATABASE_ID"|g' \
     -e 's|YOUR_ACCOUNT_ID|YOUR_ACCOUNT_ID|g' \
     -e 's|YOUR_DEV_ACCOUNT_ID|YOUR_DEV_ACCOUNT_ID|g' \
     -e 's|YOUR_DEV_D1_DATABASE_ID|YOUR_DEV_D1_DATABASE_ID|g' \
@@ -47,7 +47,7 @@ find . -type f \( -name "*.ts" -o -name "*.tsx" -o -name "*.md" -o -name "*.toml
     {} +
 
 # Verify no secrets
-LEAKS=$(grep -rl "YOUR_D1_DATABASE_ID" . 2>/dev/null | grep -v node_modules | grep -v ".git/")
+LEAKS=$(grep -rl "b2712617\|4ed0681\|98ca4e0c\|3723bd16\|37f8f88be4c0\|c40947ff58a7\|aiagent\.mini@gmail" . 2>/dev/null | grep -v node_modules | grep -v ".git/")
 if [ -n "$LEAKS" ]; then
   echo "WARNING: secrets found in:"
   echo "$LEAKS"

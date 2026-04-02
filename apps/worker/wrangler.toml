@@ -2,12 +2,16 @@ name = "line-harness"
 main = "src/index.ts"
 compatibility_date = "2024-12-01"
 workers_dev = true
+
+# ═══════════════════════════════════════════════════════════════
+# デフォルト = テスト環境 (noda@)
+# 使い方: npx wrangler deploy
+# ═══════════════════════════════════════════════════════════════
 account_id = "YOUR_DEV_ACCOUNT_ID"
 
-# Static assets (LIFF pages) served by Workers Assets
-# SPA fallback ensures all non-API paths serve index.html
 [assets]
-not_found_handling = "single-page-application"
+directory = "dist/client"
+binding = "ASSETS"
 
 [[d1_databases]]
 binding = "DB"
@@ -19,4 +23,28 @@ binding = "IMAGES"
 bucket_name = "line-harness-images"
 
 [triggers]
+crons = ["*/5 * * * *"]
+
+# ═══════════════════════════════════════════════════════════════
+# 本番環境 (aiagent.mini@)
+# 使い方: npx wrangler deploy --env production --name line-crm-worker
+# D1:     npx wrangler d1 execute line-crm --env production --remote --file ...
+# ═══════════════════════════════════════════════════════════════
+[env.production]
+account_id = "YOUR_ACCOUNT_ID"
+
+[env.production.assets]
+directory = "dist/client"
+binding = "ASSETS"
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "line-crm"
+database_id = "YOUR_D1_DATABASE_ID"
+
+[[env.production.r2_buckets]]
+binding = "IMAGES"
+bucket_name = "line-harness-images"
+
+[env.production.triggers]
 crons = ["*/5 * * * *"]

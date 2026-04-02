@@ -25,6 +25,14 @@ export function registerCreateForm(server: McpServer): void {
         .string()
         .optional()
         .describe("Scenario ID to auto-enroll when form is submitted"),
+      onSubmitMessageType: z
+        .enum(["text", "flex"])
+        .optional()
+        .describe("Custom message type to send after submission. Supports template variables: {{name}}, {{auth_url:CHANNEL_ID}}"),
+      onSubmitMessageContent: z
+        .string()
+        .optional()
+        .describe("Custom message content to send after submission. If set, replaces the default confirmation Flex."),
       saveToMetadata: z
         .boolean()
         .default(true)
@@ -40,6 +48,8 @@ export function registerCreateForm(server: McpServer): void {
       fields,
       onSubmitTagId,
       onSubmitScenarioId,
+      onSubmitMessageType,
+      onSubmitMessageContent,
       saveToMetadata,
     }) => {
       try {
@@ -50,6 +60,8 @@ export function registerCreateForm(server: McpServer): void {
           fields: JSON.parse(fields),
           onSubmitTagId,
           onSubmitScenarioId,
+          onSubmitMessageType,
+          onSubmitMessageContent,
           saveToMetadata,
         });
         return {
