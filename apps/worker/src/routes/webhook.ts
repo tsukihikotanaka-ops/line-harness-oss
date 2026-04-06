@@ -91,6 +91,8 @@ async function handleEvent(
       event.source.type === 'user' ? event.source.userId : undefined;
     if (!userId) return;
 
+    console.log(`[follow] userId=${userId} lineAccountId=${lineAccountId}`);
+
     // プロフィール取得 & 友だち登録/更新
     let profile;
     try {
@@ -99,6 +101,8 @@ async function handleEvent(
       console.error('Failed to get profile for', userId, err);
     }
 
+    console.log(`[follow] profile=${profile?.displayName ?? 'null'}`);
+
     const friend = await upsertFriend(db, {
       lineUserId: userId,
       displayName: profile?.displayName ?? null,
@@ -106,10 +110,13 @@ async function handleEvent(
       statusMessage: profile?.statusMessage ?? null,
     });
 
-    // Set line_account_id for multi-account tracking
+    console.log(`[follow] friend.id=${friend.id} friend.line_account_id=${(friend as any).line_account_id}`);
+
+    // Set line_account_id for multi-account tracking (always update on follow)
     if (lineAccountId) {
-      await db.prepare('UPDATE friends SET line_account_id = ? WHERE id = ? AND line_account_id IS NULL')
-        .bind(lineAccountId, friend.id).run();
+      await db.prepare('UPDATE friends SET line_account_id = ?, updated_at = ? WHERE id = ?')
+        .bind(lineAccountId, jstNow(), friend.id).run();
+      console.log(`[follow] line_account_id set to ${lineAccountId} for friend ${friend.id}`);
     }
 
     // friend_add シナリオに登録（このアカウントのシナリオのみ）

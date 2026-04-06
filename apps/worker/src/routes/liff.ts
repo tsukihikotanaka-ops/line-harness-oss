@@ -12,6 +12,7 @@ import {
   getLineAccountById,
   getLineAccounts,
   getTrafficPoolBySlug,
+  getRandomPoolAccount,
   jstNow,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
@@ -60,19 +61,32 @@ liffRoutes.get('/auth/line', async (c) => {
       liffUrl = `https://liff.line.me/${account.liff_id}`;
     }
   } else {
-    // Traffic pool: use active account for default routing
+    // Traffic pool: pick random account from pool for distribution
     // NOTE: accountParam is NOT set here — setting it triggers the cross-account
     // OAuth guard (L123) which skips LIFF on mobile. Pool is not cross-account.
     // Instead, pool's channel_id goes into state only for callback to resolve.
-    const pool = await getTrafficPoolBySlug(c.env.DB, c.req.query('pool') || 'main');
-    if (pool?.login_channel_id) {
-      channelId = pool.login_channel_id;
-    }
-    if (pool?.liff_id) {
-      liffUrl = `https://liff.line.me/${pool.liff_id}`;
-    }
-    if (pool?.channel_id) {
-      poolAccount = pool.channel_id;
+    const poolSlug = c.req.query('pool') || 'main';
+    const pool = await getTrafficPoolBySlug(c.env.DB, poolSlug);
+    if (pool) {
+      const account = await getRandomPoolAccount(c.env.DB, pool.id);
+      if (account) {
+        if (account.login_channel_id) channelId = account.login_channel_id;
+        if (account.liff_id) liffUrl = `https://liff.line.me/${account.liff_id}`;
+        if (account.channel_id) poolAccount = account.channel_id;
+      } else {
+        // Check if pool_accounts exist at all (vs all disabled)
+        const { getPoolAccounts } = await import('@line-crm/db');
+        const allAccounts = await getPoolAccounts(c.env.DB, pool.id);
+        if (allAccounts.length === 0) {
+          // No pool_accounts yet — fallback to active_account_id (migration period)
+          if (pool.login_channel_id) channelId = pool.login_channel_id;
+          if (pool.liff_id) liffUrl = `https://liff.line.me/${pool.liff_id}`;
+          if (pool.channel_id) poolAccount = pool.channel_id;
+        } else {
+          // All pool_accounts disabled — fail closed, don't leak to default account
+          return c.text('このリンクは現在利用できません。しばらくしてからお試しください。', 503);
+        }
+      }
     }
   }
   const callbackUrl = `${baseUrl}/auth/callback`;
@@ -89,6 +103,10 @@ liffRoutes.get('/auth/line', async (c) => {
   if (liffIdMatch) liffParams.set('liffId', liffIdMatch[1]);
   if (externalRef) liffParams.set('ref', externalRef);
   if (formId) liffParams.set('form', formId);
+  const gateParam = c.req.query('gate') || '';
+  if (gateParam) liffParams.set('gate', gateParam);
+  const xhParam2 = c.req.query('xh') || '';
+  if (xhParam2) liffParams.set('xh', xhParam2);
   if (redirect) liffParams.set('redirect', redirect);
   if (gclid) liffParams.set('gclid', gclid);
   if (fbclid) liffParams.set('fbclid', fbclid);
@@ -129,8 +147,8 @@ liffRoutes.get('/auth/line', async (c) => {
   const ua = (c.req.header('user-agent') || '').toLowerCase();
   const isMobile = /iphone|ipad|android|mobile/.test(ua);
   if (isMobile) {
-    if (accountParam || formId) {
-      // Cross-account or form link: use OAuth so callback handles push
+    if (accountParam) {
+      // Cross-account link: use OAuth so callback handles push
       return c.redirect(loginUrl.toString());
     }
     return c.redirect(qrUrl);
@@ -160,7 +178,7 @@ liffRoutes.get('/auth/line', async (c) => {
     <h1>全機能を使う（0円）</h1>
     <p class="sub">スマートフォンで QR コードを読み取ってください</p>
     <div class="qr">
-      <img src="https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(qrUrl)}" alt="QR Code">
+      <img src="/api/qr?size=240x240&data=${encodeURIComponent(qrUrl)}" alt="QR Code">
     </div>
     <p class="hint">LINE アプリのカメラまたは<br>スマートフォンのカメラで読み取れます</p>
     <div class="badge">LINE Harness OSS</div>
@@ -502,8 +520,43 @@ liffRoutes.get('/auth/callback', async (c) => {
         }
         const lineClient = new LineClient(accessToken);
         await lineClient.pushMessage(friend.line_user_id, [{
-          type: 'text',
-          text: `🎁 特典受け取りフォーム\n\n以下のリンクからどうぞ👇\n${formLiffUrl}`,
+          type: 'flex',
+          altText: '🎁 特典を受け取る',
+          contents: {
+            type: 'bubble',
+            header: {
+              type: 'box',
+              layout: 'vertical',
+              backgroundColor: '#0d1117',
+              paddingAll: '20px',
+              contents: [
+                { type: 'text', text: '🎁', size: '3xl', align: 'center' },
+                { type: 'text', text: '特典をお届けします！', weight: 'bold', size: 'lg', color: '#ffffff', align: 'center', margin: 'md' },
+              ],
+            },
+            body: {
+              type: 'box',
+              layout: 'vertical',
+              paddingAll: '20px',
+              contents: [
+                { type: 'text', text: '下のボタンから特典を\n受け取ってください', size: 'sm', color: '#666666', align: 'center', wrap: true },
+              ],
+            },
+            footer: {
+              type: 'box',
+              layout: 'vertical',
+              paddingAll: '16px',
+              contents: [
+                {
+                  type: 'button',
+                  action: { type: 'uri', label: '特典を受け取る', uri: formLiffUrl },
+                  style: 'primary',
+                  color: '#06C755',
+                  height: 'md',
+                },
+              ],
+            },
+          },
         }]);
       } catch (err) {
         console.error('Form link push error (non-blocking):', err);
@@ -1223,8 +1276,30 @@ liffRoutes.post('/api/liff/send-form-link', async (c) => {
     }
     const lineClient = new LineClient(accessToken);
     await lineClient.pushMessage(lineUserId, [{
-      type: 'text',
-      text: `🎁 特典受け取りフォーム\n\n以下のリンクからどうぞ👇\n${formLiffUrl}`,
+      type: 'flex',
+      altText: '🎁 特典を受け取る',
+      contents: {
+        type: 'bubble',
+        header: {
+          type: 'box', layout: 'vertical', backgroundColor: '#0d1117', paddingAll: '20px',
+          contents: [
+            { type: 'text', text: '🎁', size: '3xl', align: 'center' },
+            { type: 'text', text: '特典をお届けします！', weight: 'bold', size: 'lg', color: '#ffffff', align: 'center', margin: 'md' },
+          ],
+        },
+        body: {
+          type: 'box', layout: 'vertical', paddingAll: '20px',
+          contents: [
+            { type: 'text', text: '下のボタンから特典を\n受け取ってください', size: 'sm', color: '#666666', align: 'center', wrap: true },
+          ],
+        },
+        footer: {
+          type: 'box', layout: 'vertical', paddingAll: '16px',
+          contents: [
+            { type: 'button', action: { type: 'uri', label: '特典を受け取る', uri: formLiffUrl }, style: 'primary', color: '#06C755', height: 'md' },
+          ],
+        },
+      },
     }]);
 
     return c.json({ success: true });

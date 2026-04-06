@@ -120,6 +120,20 @@ function showFriendAdd(profile: { displayName: string; pictureUrl?: string }) {
       try {
         const { friendFlag } = await liff.getFriendship();
         if (friendFlag) {
+          // Send form link if form param exists (was lost during friend-add flow)
+          const formParam = new URLSearchParams(window.location.search).get('form');
+          if (formParam) {
+            try {
+              const fp = await liff.getProfile();
+              await apiCall('/api/liff/send-form-link', {
+                method: 'POST',
+                body: JSON.stringify({
+                  lineUserId: fp.userId,
+                  formId: formParam,
+                }),
+              });
+            } catch { /* best-effort */ }
+          }
           showCompletion(profile, false);
         }
       } catch {
@@ -296,21 +310,7 @@ async function main() {
       const formId = params.get('id');
       await initForm(formId);
     } else if (!page) {
-      // Check for ?form=xxx shorthand (from /auth/line?form=xxx flow)
-      const params = new URLSearchParams(window.location.search);
-      const formParam = params.get('form');
-      if (formParam) {
-        // Ensure user is a friend before showing form
-        const { friendFlag } = await liff.getFriendship();
-        if (!friendFlag) {
-          const profile = await liff.getProfile();
-          showFriendAdd(profile);
-          return;
-        }
-        await initForm(formParam);
-      } else {
-        await linkAndAddFlow();
-      }
+      await linkAndAddFlow();
     } else {
       await linkAndAddFlow();
     }

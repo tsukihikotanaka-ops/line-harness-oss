@@ -135,20 +135,22 @@ forms.put('/api/forms/:id', async (c) => {
       isActive?: boolean;
     }>();
 
-    const updated = await updateForm(c.env.DB, id, {
-      name: body.name,
-      description: body.description,
-      fields: body.fields !== undefined ? JSON.stringify(body.fields) : undefined,
-      onSubmitTagId: body.onSubmitTagId,
-      onSubmitScenarioId: body.onSubmitScenarioId,
-      onSubmitMessageType: body.onSubmitMessageType,
-      onSubmitMessageContent: body.onSubmitMessageContent,
-      onSubmitWebhookUrl: body.onSubmitWebhookUrl,
-      onSubmitWebhookHeaders: body.onSubmitWebhookHeaders,
-      onSubmitWebhookFailMessage: body.onSubmitWebhookFailMessage,
-      saveToMetadata: body.saveToMetadata,
-      isActive: body.isActive,
-    });
+    // Only include fields that were explicitly sent (avoid undefined → null conversion)
+    const updates: Record<string, unknown> = {};
+    if (body.name !== undefined) updates.name = body.name;
+    if (body.description !== undefined) updates.description = body.description;
+    if (body.fields !== undefined) updates.fields = JSON.stringify(body.fields);
+    if (body.onSubmitTagId !== undefined) updates.onSubmitTagId = body.onSubmitTagId;
+    if (body.onSubmitScenarioId !== undefined) updates.onSubmitScenarioId = body.onSubmitScenarioId;
+    if (body.onSubmitMessageType !== undefined) updates.onSubmitMessageType = body.onSubmitMessageType;
+    if (body.onSubmitMessageContent !== undefined) updates.onSubmitMessageContent = body.onSubmitMessageContent;
+    if (body.onSubmitWebhookUrl !== undefined) updates.onSubmitWebhookUrl = body.onSubmitWebhookUrl;
+    if (body.onSubmitWebhookHeaders !== undefined) updates.onSubmitWebhookHeaders = body.onSubmitWebhookHeaders;
+    if (body.onSubmitWebhookFailMessage !== undefined) updates.onSubmitWebhookFailMessage = body.onSubmitWebhookFailMessage;
+    if (body.saveToMetadata !== undefined) updates.saveToMetadata = body.saveToMetadata;
+    if (body.isActive !== undefined) updates.isActive = body.isActive;
+
+    const updated = await updateForm(c.env.DB, id, updates as any);
 
     if (!updated) {
       return c.json({ success: false, error: 'Form not found' }, 404);
@@ -242,11 +244,14 @@ forms.post('/api/forms/:id/submit', async (c) => {
       }
     }
 
-    // Webhook gate — server-side verification
-    // Note: CF Workers same-account fetch may 404 for self-referencing URLs.
-    // The webhook URL is also served in the form definition for the LIFF client to use.
-    if (form.on_submit_webhook_url) {
+    // Webhook gate — skip if client pre-verified via repliers endpoint
+    delete submissionData._webhookVerified;
+    const skipWebhook = Boolean(body._skipWebhook);
+    delete submissionData._skipWebhook;
+    let webhookData: Record<string, unknown> | null = null;
+    if (form.on_submit_webhook_url && !skipWebhook) {
       const webhookResult = await callFormWebhook(form, submissionData);
+      webhookData = webhookResult.data as Record<string, unknown> | null;
       if (!webhookResult.passed) {
         // Webhook rejected — send fail message and stop
         if (form.on_submit_webhook_fail_message && friendId) {
@@ -317,6 +322,55 @@ forms.post('/api/forms/:id/submit', async (c) => {
         sideEffects.push(enrollFriendInScenario(db, friendId, form.on_submit_scenario_id));
       }
 
+      // If webhook returned a join_url (e.g. Meet Harness), send a Flex button to the user
+      if (webhookData?.join_url) {
+        sideEffects.push(
+          (async () => {
+            const friend = await getFriendById(db, friendId!);
+            if (!friend?.line_user_id) return;
+            const { LineClient } = await import('@line-crm/line-sdk');
+            let accessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
+            if ((friend as unknown as Record<string, unknown>).line_account_id) {
+              const { getLineAccountById } = await import('@line-crm/db');
+              const account = await getLineAccountById(db, (friend as unknown as Record<string, unknown>).line_account_id as string);
+              if (account) accessToken = account.channel_access_token;
+            }
+            const lineClient = new LineClient(accessToken);
+            const joinUrl = String(webhookData!.join_url);
+            const meetFlex = {
+              type: 'bubble',
+              header: {
+                type: 'box', layout: 'vertical',
+                contents: [
+                  { type: 'text', text: 'ヒアリングの準備ができました', size: 'md', weight: 'bold', color: '#1e293b' },
+                ],
+                paddingAll: '20px', backgroundColor: '#f0f9ff',
+              },
+              body: {
+                type: 'box', layout: 'vertical',
+                contents: [
+                  { type: 'text', text: 'アンケートありがとうございます。続けて短いヒアリングにご協力ください。', size: 'sm', color: '#475569', wrap: true },
+                ],
+                paddingAll: '20px',
+              },
+              footer: {
+                type: 'box', layout: 'vertical',
+                contents: [
+                  {
+                    type: 'button', style: 'primary', color: '#4CAF50',
+                    action: { type: 'uri', label: 'ヒアリングを始める', uri: joinUrl },
+                  },
+                ],
+                paddingAll: '16px',
+              },
+            };
+            await lineClient.pushMessage(friend.line_user_id, [
+              { type: 'flex', altText: 'ヒアリングの準備ができました', contents: meetFlex },
+            ]);
+          })(),
+        );
+      }
+
       // Send confirmation message with submitted data back to user
       sideEffects.push(
         (async () => {
@@ -381,12 +435,15 @@ forms.post('/api/forms/:id/submit', async (c) => {
             },
           };
 
-          const messages = [buildMessage('flex', JSON.stringify(resultFlex))];
+          const messages: ReturnType<typeof buildMessage>[] = [];
 
-          // If form has a custom on_submit_message, send it AFTER the diagnostic result
           if (form.on_submit_message_type && form.on_submit_message_content) {
+            // Custom message replaces default diagnostic result
             const expanded = expandVariables(form.on_submit_message_content, friendData, apiOrigin);
             messages.push(buildMessage(form.on_submit_message_type, expanded));
+          } else {
+            // Default: send diagnostic result Flex
+            messages.push(buildMessage('flex', JSON.stringify(resultFlex)));
           }
 
           await lineClient.pushMessage(friend.line_user_id, messages);
@@ -432,11 +489,15 @@ async function callFormWebhook(
 
     // Determine method: GET if URL has {placeholders} replaced, POST otherwise
     const isGet = form.on_submit_webhook_url.includes('{');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
     const res = await fetch(url, {
       method: isGet ? 'GET' : 'POST',
       headers,
+      signal: controller.signal,
       ...(isGet ? {} : { body: JSON.stringify(submissionData) }),
     });
+    clearTimeout(timeout);
 
     if (!res.ok) {
       return { passed: false, data: { error: `HTTP ${res.status}` } };

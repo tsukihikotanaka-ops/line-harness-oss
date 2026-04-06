@@ -580,3 +580,23 @@ CREATE TABLE IF NOT EXISTS staff_members (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_members_api_key ON staff_members(api_key);
 CREATE INDEX IF NOT EXISTS idx_staff_members_role ON staff_members(role);
+
+-- Reusable message templates (text or Flex) for reward messages in campaigns
+CREATE TABLE IF NOT EXISTS message_templates (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  message_type TEXT NOT NULL CHECK (message_type IN ('text', 'flex')),
+  message_content TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Pool accounts — multiple LINE accounts per traffic pool for distribution
+CREATE TABLE IF NOT EXISTS pool_accounts (
+  id TEXT PRIMARY KEY,
+  pool_id TEXT NOT NULL REFERENCES traffic_pools(id) ON DELETE CASCADE,
+  line_account_id TEXT NOT NULL REFERENCES line_accounts(id) ON DELETE CASCADE,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(pool_id, line_account_id)
+);
