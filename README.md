@@ -2,7 +2,7 @@
 
 > ### **[LINE で無料体験する](https://shudesu.github.io/line-harness-oss/)** 👈
 
-LINE公式アカウントの完全オープンソース CRM。L社 / U社 の無料代替。
+LINE　公式アカウントの完全オープンソース CRM。L社 / U社 の無料代替。
 
 Cloudflare 無料枠で動く。サーバー代 0 円。Claude Code から全操作可能。
 
