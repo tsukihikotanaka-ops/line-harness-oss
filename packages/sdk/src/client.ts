@@ -1,3 +1,4 @@
+import { URL } from 'node:url';
 import { HttpClient } from './http.js'
 import { FriendsResource } from './resources/friends.js'
 import { TagsResource } from './resources/tags.js'
