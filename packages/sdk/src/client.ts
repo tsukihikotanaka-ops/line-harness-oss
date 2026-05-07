@@ -1,5 +1,4 @@
-import { URL } from 'url';
-import { HttpClient } from './http.js'
+import  { HttpClient } from './http.js';
 import { FriendsResource } from './resources/friends.js'
 import { TagsResource } from './resources/tags.js'
 import { ScenariosResource } from './resources/scenarios.js'
