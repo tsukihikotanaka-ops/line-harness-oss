@@ -1,4 +1,3 @@
-import { URLSearchParams } from 'url';
 import type { HttpClient } from '../http.js'
 import type { ApiResponse, PaginatedData, Friend, FriendListParams, MessageType } from '../types.js'
 
